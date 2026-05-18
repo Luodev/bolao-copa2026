@@ -16,18 +16,18 @@ st.set_page_config(
 # GAME DATA
 # ─────────────────────────────────────────────
 GROUPS = {
-    "A": ["Estados Unidos", "Panamá", "Arábia Saudita", "Equador"],
-    "B": ["México", "Jamaica", "Sérvia", "África do Sul"],
-    "C": ["Canadá", "Marrocos", "Bélgica", "Austrália"],
-    "D": ["Uruguai", "Bolívia", "Portugal", "Rep. Tcheca"],
-    "E": ["Brasil", "Paraguai", "Japão", "França"],
-    "F": ["Argentina", "Peru", "Nova Zelândia", "Croácia"],
-    "G": ["Colômbia", "Venezuela", "Coreia do Sul", "Espanha"],
-    "H": ["Chile", "El Salvador", "Irã", "Alemanha"],
-    "I": ["Costa Rica", "Guatemala", "Camarões", "Países Baixos"],
-    "J": ["Senegal", "Nigéria", "Polônia", "Suíça"],
-    "K": ["Côte d'Ivoire", "Egito", "Áustria", "Inglaterra"],
-    "L": ["Gana", "Honduras", "Iraque", "Itália"],
+    "A": ["México", "África do Sul", "Coreia do Sul", "República Tcheca"],
+    "B": ["Canadá", "Bósnia e Herzegovina", "Qatar", "Suíça"],
+    "C": ["Brasil", "Marrocos", "Haiti", "Escócia"],
+    "D": ["Estados Unidos", "Paraguai", "Austrália", "Turquia"],
+    "E": ["Alemanha", "Curaçao", "Costa do Marfim", "Equador"],
+    "F": ["Países Baixos", "Japão", "Suécia", "Tunísia"],
+    "G": ["Bélgica", "Egito", "Irã", "Nova Zelândia"],
+    "H": ["Espanha", "Cabo Verde", "Arábia Saudita", "Uruguai"],
+    "I": ["França", "Senegal", "Iraque", "Noruega"],
+    "J": ["Argentina", "Argélia", "Áustria", "Jordânia"],
+    "K": ["Portugal", "Rep. Congo", "Uzbequistão", "Colômbia"],
+    "L": ["Inglaterra", "Croácia", "Gana", "Panamá"],
 }
 MATCHUPS = [(0, 1), (2, 3), (0, 2), (1, 3), (0, 3), (1, 2)]
 ROUNDS   = [1,      1,      2,      2,      3,      3     ]
@@ -195,6 +195,31 @@ st.markdown("""
 .badge-pend  { background:#fef9e7; color:#b7950b; border-radius:6px; padding:2px 8px; font-size:.75rem; }
 
 div[data-testid="stNumberInput"] input { text-align: center; font-weight: 600; }
+
+.pts-card {
+    border-radius: 14px; padding: 24px 28px; margin: 8px 0;
+    display: flex; align-items: flex-start; gap: 20px;
+}
+.pts-card.exato  { background: linear-gradient(135deg, #d5f5e3, #a9dfbf); border-left: 6px solid #1E8449; }
+.pts-card.result { background: linear-gradient(135deg, #fef9e7, #fdebd0); border-left: 6px solid #F39C12; }
+.pts-card.errou  { background: linear-gradient(135deg, #f9ebea, #f5cac3); border-left: 6px solid #E74C3C; }
+.pts-icon  { font-size: 2.2rem; line-height: 1; }
+.pts-valor { font-size: 2.5rem; font-weight: 900; line-height: 1; }
+.pts-exato { color: #1E8449; }
+.pts-res   { color: #D35400; }
+.pts-erro  { color: #C0392B; }
+.pts-titulo{ font-size: 1.1rem; font-weight: 700; margin-bottom: 4px; }
+.pts-desc  { font-size: 0.88rem; color: #555; line-height: 1.5; }
+.pts-ex    { font-size: 0.82rem; color: #777; margin-top: 6px;
+             background: rgba(255,255,255,0.6); border-radius: 6px; padding: 5px 10px; }
+
+.group-card {
+    background: white; border-radius: 10px; padding: 14px 18px;
+    margin: 6px 0; box-shadow: 0 1px 4px rgba(0,0,0,.06);
+}
+.group-title { font-weight: 700; color: #1a1a2e; margin-bottom: 6px; font-size: 0.95rem; }
+.group-team  { padding: 3px 0; font-size: 0.88rem; color: #444; border-bottom: 1px solid #f0f0f0; }
+.group-team:last-child { border-bottom: none; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -207,11 +232,19 @@ with st.sidebar:
     st.markdown("---")
     pagina = st.radio(
         "Menu",
-        ["🏆 Ranking", "📝 Meus Palpites", "⚽ Jogos", "👥 Participantes", "🔒 Admin"],
+        ["🏆 Ranking", "📝 Meus Palpites", "⚽ Jogos", "👥 Participantes", "📖 Como Pontua", "🔒 Admin"],
         label_visibility="collapsed",
     )
     st.markdown("---")
-    st.caption("Bolão da Copa do Mundo 2026\nEUA · Canadá · México")
+    st.markdown("""
+    <div style='font-size:0.75rem; color:#aaa; line-height:1.6'>
+    🥇 Placar exato → <b style='color:#F1C40F'>3 pts</b><br>
+    🟡 Resultado certo → <b style='color:#aaa'>1 pt</b><br>
+    ❌ Errou → <b style='color:#aaa'>0 pts</b>
+    </div>
+    """, unsafe_allow_html=True)
+    st.markdown("---")
+    st.caption("Copa do Mundo 2026\nEUA · Canadá · México")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -509,6 +542,100 @@ elif pagina == "👥 Participantes":
                 clear_cache()
                 st.success(f"✅ {nome.strip()} cadastrado!")
                 st.rerun()
+
+
+# ═══════════════════════════════════════════════════════════
+#  📖 COMO PONTUA
+# ═══════════════════════════════════════════════════════════
+elif pagina == "📖 Como Pontua":
+    st.markdown('<p class="page-title">📖 Como Funciona a Pontuação</p>', unsafe_allow_html=True)
+    st.markdown('<p class="subtitle">Entenda como os pontos são calculados</p>', unsafe_allow_html=True)
+
+    # Cards de pontuação
+    st.markdown("""
+    <div class="pts-card exato">
+        <div class="pts-icon">🎯</div>
+        <div>
+            <div style="display:flex;align-items:baseline;gap:10px">
+                <div class="pts-valor pts-exato">3 pts</div>
+                <div class="pts-titulo">Placar Exato</div>
+            </div>
+            <div class="pts-desc">Você acertou o número exato de gols dos dois times.</div>
+            <div class="pts-ex">✅ Exemplo: você palpitou <b>Brasil 2 × 1 França</b> e o resultado foi <b>Brasil 2 × 1 França</b></div>
+        </div>
+    </div>
+
+    <div class="pts-card result">
+        <div class="pts-icon">🟡</div>
+        <div>
+            <div style="display:flex;align-items:baseline;gap:10px">
+                <div class="pts-valor pts-res">1 pt</div>
+                <div class="pts-titulo">Resultado Certo (sem placar exato)</div>
+            </div>
+            <div class="pts-desc">Você acertou quem ganhou ou que seria empate, mas errou o placar.</div>
+            <div class="pts-ex">🟡 Exemplo: você palpitou <b>Brasil 3 × 0 França</b> e o resultado foi <b>Brasil 1 × 0 França</b> — ambos vitória do Brasil</div>
+        </div>
+    </div>
+
+    <div class="pts-card errou">
+        <div class="pts-icon">❌</div>
+        <div>
+            <div style="display:flex;align-items:baseline;gap:10px">
+                <div class="pts-valor pts-erro">0 pts</div>
+                <div class="pts-titulo">Resultado Errado</div>
+            </div>
+            <div class="pts-desc">Você errou quem ganhou (ou empate).</div>
+            <div class="pts-ex">❌ Exemplo: você palpitou <b>Brasil 2 × 0 França</b> e o resultado foi <b>França 1 × 0 Brasil</b></div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Tabela resumo
+    st.subheader("📊 Tabela de Pontos")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Placar exato", "3 pontos", "máximo por jogo")
+    col2.metric("Resultado certo", "1 ponto", "vitória/empate/derrota")
+    col3.metric("Resultado errado", "0 pontos", "")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Exemplos práticos
+    st.subheader("📝 Exemplos Práticos")
+    exemplos = [
+        ("Brasil 2 × 1 Argentina", "Brasil 2 × 1 Argentina", "🎯 Placar exato", 3, "#d5f5e3"),
+        ("Brasil 3 × 0 Argentina", "Brasil 2 × 1 Argentina", "🟡 Vitória Brasil (certo)", 1, "#fef9e7"),
+        ("Empate 1 × 1",           "Empate 0 × 0",           "🟡 Empate (certo)",         1, "#fef9e7"),
+        ("Argentina 1 × 0 Brasil", "Brasil 2 × 0 Argentina", "❌ Resultado errado",       0, "#f9ebea"),
+    ]
+    for palpite, resultado, descricao, pts, cor in exemplos:
+        st.markdown(f"""
+        <div style="background:{cor};border-radius:8px;padding:10px 16px;margin:4px 0;
+                    display:flex;align-items:center;gap:16px;font-size:0.9rem">
+            <div style="flex:1"><b>Palpite:</b> {palpite}</div>
+            <div style="flex:1"><b>Resultado:</b> {resultado}</div>
+            <div style="flex:1">{descricao}</div>
+            <div style="font-size:1.3rem;font-weight:800;min-width:50px;text-align:right">
+                {'+' if pts > 0 else ''}{pts} pts
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Grupos da copa
+    st.subheader("🌍 Grupos da Copa 2026")
+    cols = st.columns(4)
+    for idx, (letra, times) in enumerate(GROUPS.items()):
+        with cols[idx % 4]:
+            times_html = "".join(f'<div class="group-team">{"🏠 " if i==0 else "  "}{t}</div>' for i, t in enumerate(times))
+            st.markdown(f"""
+            <div class="group-card">
+                <div class="group-title">Grupo {letra}</div>
+                {times_html}
+            </div>
+            """, unsafe_allow_html=True)
 
 
 # ═══════════════════════════════════════════════════════════
