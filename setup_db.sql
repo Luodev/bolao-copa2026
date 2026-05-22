@@ -19,8 +19,12 @@ CREATE TABLE IF NOT EXISTS resultados (
     visitante       VARCHAR(100),
     gols_mandante   INTEGER,
     gols_visitante  INTEGER,
+    data_hora       TIMESTAMPTZ,
     atualizado_em   TIMESTAMP DEFAULT NOW()
 );
+
+-- Se a tabela ja existe sem essa coluna:
+ALTER TABLE resultados ADD COLUMN IF NOT EXISTS data_hora TIMESTAMPTZ;
 
 -- 3. Palpites de cada participante
 CREATE TABLE IF NOT EXISTS palpites (

@@ -1,6 +1,99 @@
 import streamlit as st
 import pandas as pd
 from supabase import create_client
+from datetime import datetime, timedelta, timezone
+
+# Timezone Brasil (UTC-3)
+BR_TZ = timezone(timedelta(hours=-3))
+
+# ─────────────────────────────────────────────
+# BANDEIRAS DOS PAISES
+# ─────────────────────────────────────────────
+FLAGS = {
+    "México": "🇲🇽",            "África do Sul": "🇿🇦",
+    "Coreia do Sul": "🇰🇷",     "República Tcheca": "🇨🇿",
+    "Canadá": "🇨🇦",            "Bósnia e Herzegovina": "🇧🇦",
+    "Qatar": "🇶🇦",             "Suíça": "🇨🇭",
+    "Brasil": "🇧🇷",            "Marrocos": "🇲🇦",
+    "Haiti": "🇭🇹",             "Escócia": "🏴󠁧󠁢󠁳󠁣󠁴󠁿",
+    "Estados Unidos": "🇺🇸",    "Paraguai": "🇵🇾",
+    "Austrália": "🇦🇺",         "Turquia": "🇹🇷",
+    "Alemanha": "🇩🇪",          "Curaçao": "🇨🇼",
+    "Costa do Marfim": "🇨🇮",   "Equador": "🇪🇨",
+    "Países Baixos": "🇳🇱",     "Japão": "🇯🇵",
+    "Suécia": "🇸🇪",            "Tunísia": "🇹🇳",
+    "Bélgica": "🇧🇪",           "Egito": "🇪🇬",
+    "Irã": "🇮🇷",               "Nova Zelândia": "🇳🇿",
+    "Espanha": "🇪🇸",           "Cabo Verde": "🇨🇻",
+    "Arábia Saudita": "🇸🇦",    "Uruguai": "🇺🇾",
+    "França": "🇫🇷",            "Senegal": "🇸🇳",
+    "Iraque": "🇮🇶",            "Noruega": "🇳🇴",
+    "Argentina": "🇦🇷",         "Argélia": "🇩🇿",
+    "Áustria": "🇦🇹",           "Jordânia": "🇯🇴",
+    "Portugal": "🇵🇹",          "Rep. Congo": "🇨🇩",
+    "Uzbequistão": "🇺🇿",       "Colômbia": "🇨🇴",
+    "Inglaterra": "🏴󠁧󠁢󠁥󠁮󠁧󠁿",   "Croácia": "🇭🇷",
+    "Gana": "🇬🇭",              "Panamá": "🇵🇦",
+    "A definir": "⚽",
+}
+
+def flag(team: str) -> str:
+    return FLAGS.get(team, "⚽")
+
+def lbl(team: str) -> str:
+    return f"{flag(team)} {team}"
+
+# ─────────────────────────────────────────────
+# UTILIDADES DE HORARIO
+# ─────────────────────────────────────────────
+def now_br():
+    return datetime.now(BR_TZ)
+
+def parse_dh(dh):
+    """Aceita string ISO ou datetime — retorna datetime ciente de tz."""
+    if not dh:
+        return None
+    if isinstance(dh, str):
+        try:
+            d = datetime.fromisoformat(dh.replace("Z", "+00:00"))
+        except Exception:
+            return None
+    else:
+        d = dh
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=BR_TZ)
+    return d.astimezone(BR_TZ)
+
+def esta_travado(dh) -> bool:
+    """Retorna True se o jogo ja comecou (apostas travadas)."""
+    d = parse_dh(dh)
+    if not d:
+        return False
+    return now_br() >= d
+
+def contagem_regressiva(dh) -> str:
+    """Formata a contagem ate o jogo ou 'apostas fechadas'."""
+    d = parse_dh(dh)
+    if not d:
+        return "🕐 Horário a definir"
+    delta = d - now_br()
+    if delta.total_seconds() <= 0:
+        return "🔒 Apostas fechadas"
+    total = int(delta.total_seconds())
+    dias = total // 86400
+    horas = (total % 86400) // 3600
+    mins = (total % 3600) // 60
+    if dias > 0:
+        return f"⏰ Falta {dias}d {horas}h"
+    if horas > 0:
+        return f"⏰ Falta {horas}h {mins}min"
+    return f"⏰ Falta {mins}min"
+
+def fmt_dh(dh) -> str:
+    d = parse_dh(dh)
+    if not d:
+        return "—"
+    return d.strftime("%d/%m %H:%M")
 
 # ─────────────────────────────────────────────
 # PAGE CONFIG
@@ -318,8 +411,7 @@ elif pagina == "📝 Meus Palpites":
         games_grp = [g for g in ALL_GAMES if g.get("grupo") == letra]
 
         st.info(
-            "💡 Preencha os gols previstos para cada partida. "
-            "Jogos com resultado já lançado são bloqueados."
+            "💡 Preencha os gols previstos. Apostas travam automaticamente quando o jogo começa."
         )
 
         with st.form(f"form_grupo_{letra}"):
@@ -328,21 +420,31 @@ elif pagina == "📝 Meus Palpites":
             for game in games_grp:
                 res = resultados.get(game["id"])
                 pal = palpites.get(game["id"], {})
-                bloqueado = res is not None and res.get("gols_mandante") is not None
+                dh = (res or {}).get("data_hora")
+                tem_resultado = res is not None and res.get("gols_mandante") is not None
+                travado_hora = esta_travado(dh)
+                bloqueado = tem_resultado or travado_hora
 
-                st.markdown(f"**{game['detalhe']}**")
+                st.markdown(f"**{game['detalhe']}** &nbsp;·&nbsp; <span style='color:#888;font-size:0.85rem'>{fmt_dh(dh) if dh else 'Horário a definir'}</span>", unsafe_allow_html=True)
                 col_m, col_x, col_v = st.columns([5, 1, 5])
-                col_m.markdown(f"🏠 {game['mandante']}")
+                col_m.markdown(f"🏠 {lbl(game['mandante'])}")
                 col_x.markdown("**×**")
-                col_v.markdown(f"{game['visitante']} ✈️")
+                col_v.markdown(f"{lbl(game['visitante'])} ✈️")
 
                 col_pm, col_pv, col_status = st.columns([1, 1, 4])
-                if bloqueado:
+                if tem_resultado:
                     col_pm.markdown(f"### {res['gols_mandante']}")
                     col_pv.markdown(f"### {res['gols_visitante']}")
                     col_status.markdown(
                         f"<span class='badge-fim'>✅ Resultado lançado</span> "
                         f"— Seu palpite: {pal.get('gols_mandante', '—')} × {pal.get('gols_visitante', '—')}",
+                        unsafe_allow_html=True,
+                    )
+                elif travado_hora:
+                    col_pm.markdown(f"### {pal.get('gols_mandante','—')}")
+                    col_pv.markdown(f"### {pal.get('gols_visitante','—')}")
+                    col_status.markdown(
+                        "<span class='badge-fim' style='background:#fadbd8;color:#943126'>🔒 Apostas fechadas (jogo iniciado)</span>",
                         unsafe_allow_html=True,
                     )
                 else:
@@ -357,7 +459,7 @@ elif pagina == "📝 Meus Palpites":
                         key=f"gv_{game['id']}", label_visibility="collapsed",
                     )
                     col_status.markdown(
-                        "<span class='badge-pend'>⏳ Aguardando resultado</span>",
+                        f"<span class='badge-pend'>{contagem_regressiva(dh)}</span>",
                         unsafe_allow_html=True,
                     )
                     palpites_form[game["id"]] = (pm, pv)
@@ -368,7 +470,12 @@ elif pagina == "📝 Meus Palpites":
             )
 
         if submitted:
+            salvos, bloqueados = 0, 0
             for jid, (pm, pv) in palpites_form.items():
+                res = resultados.get(jid)
+                if esta_travado((res or {}).get("data_hora")):
+                    bloqueados += 1
+                    continue
                 if jid in palpites:
                     db.table("palpites").update(
                         {"gols_mandante": pm, "gols_visitante": pv}
@@ -378,8 +485,12 @@ elif pagina == "📝 Meus Palpites":
                         {"participante_id": part_id, "jogo_id": jid,
                          "gols_mandante": pm, "gols_visitante": pv}
                     ).execute()
+                salvos += 1
             clear_cache()
-            st.success(f"✅ Palpites do {grupo_sel} salvos!")
+            msg = f"✅ {salvos} palpite(s) salvo(s)."
+            if bloqueados:
+                msg += f" ⚠️ {bloqueados} jogo(s) já iniciado(s) e foram ignorados."
+            st.success(msg)
             st.rerun()
 
     # ── MATA-MATA ────────────────────────────────────
@@ -398,24 +509,33 @@ elif pagina == "📝 Meus Palpites":
             for game in games_ko:
                 res = resultados.get(game["id"])
                 pal = palpites.get(game["id"], {})
-                bloqueado = res is not None and res.get("gols_mandante") is not None
+                dh = (res or {}).get("data_hora")
+                tem_resultado = res is not None and res.get("gols_mandante") is not None
+                travado_hora = esta_travado(dh)
 
                 mandante  = (res or {}).get("mandante") or game["mandante"]
                 visitante = (res or {}).get("visitante") or game["visitante"]
 
-                st.markdown(f"**{game['detalhe']}**")
+                st.markdown(f"**{game['detalhe']}** &nbsp;·&nbsp; <span style='color:#888;font-size:0.85rem'>{fmt_dh(dh) if dh else 'Horário a definir'}</span>", unsafe_allow_html=True)
                 col_m, col_x, col_v = st.columns([5, 1, 5])
-                col_m.markdown(f"🏠 {mandante}")
+                col_m.markdown(f"🏠 {lbl(mandante)}")
                 col_x.markdown("**×**")
-                col_v.markdown(f"{visitante} ✈️")
+                col_v.markdown(f"{lbl(visitante)} ✈️")
 
                 col_pm, col_pv, col_status = st.columns([1, 1, 4])
-                if bloqueado:
+                if tem_resultado:
                     col_pm.markdown(f"### {res['gols_mandante']}")
                     col_pv.markdown(f"### {res['gols_visitante']}")
                     col_status.markdown(
                         f"<span class='badge-fim'>✅ Resultado lançado</span> "
                         f"— Seu palpite: {pal.get('gols_mandante','—')} × {pal.get('gols_visitante','—')}",
+                        unsafe_allow_html=True,
+                    )
+                elif travado_hora:
+                    col_pm.markdown(f"### {pal.get('gols_mandante','—')}")
+                    col_pv.markdown(f"### {pal.get('gols_visitante','—')}")
+                    col_status.markdown(
+                        "<span class='badge-fim' style='background:#fadbd8;color:#943126'>🔒 Apostas fechadas (jogo iniciado)</span>",
                         unsafe_allow_html=True,
                     )
                 else:
@@ -430,7 +550,7 @@ elif pagina == "📝 Meus Palpites":
                         key=f"kv_{game['id']}", label_visibility="collapsed",
                     )
                     col_status.markdown(
-                        "<span class='badge-pend'>⏳ Aguardando resultado</span>",
+                        f"<span class='badge-pend'>{contagem_regressiva(dh)}</span>",
                         unsafe_allow_html=True,
                     )
                     palpites_ko[game["id"]] = (pm, pv)
@@ -441,7 +561,12 @@ elif pagina == "📝 Meus Palpites":
             )
 
         if submitted_ko:
+            salvos, bloqueados = 0, 0
             for jid, (pm, pv) in palpites_ko.items():
+                res = resultados.get(jid)
+                if esta_travado((res or {}).get("data_hora")):
+                    bloqueados += 1
+                    continue
                 if jid in palpites:
                     db.table("palpites").update(
                         {"gols_mandante": pm, "gols_visitante": pv}
@@ -451,8 +576,12 @@ elif pagina == "📝 Meus Palpites":
                         {"participante_id": part_id, "jogo_id": jid,
                          "gols_mandante": pm, "gols_visitante": pv}
                     ).execute()
+                salvos += 1
             clear_cache()
-            st.success(f"✅ Palpites de {fase_sel} salvos!")
+            msg = f"✅ {salvos} palpite(s) salvo(s)."
+            if bloqueados:
+                msg += f" ⚠️ {bloqueados} jogo(s) já iniciado(s) foram ignorados."
+            st.success(msg)
             st.rerun()
 
 
@@ -482,22 +611,29 @@ elif pagina == "⚽ Jogos":
         res = resultados.get(game["id"])
         mandante  = (res or {}).get("mandante") or game["mandante"]
         visitante = (res or {}).get("visitante") or game["visitante"]
+        dh = (res or {}).get("data_hora")
 
         if res and res.get("gols_mandante") is not None:
             gm, gv = res["gols_mandante"], res["gols_visitante"]
             resultado_html = f'<div class="jogo-res">{gm} × {gv}</div>'
             badge = '<span class="badge-fim">✅</span>'
+            status_txt = fmt_dh(dh) if dh else ""
+        elif esta_travado(dh):
+            resultado_html = '<div class="jogo-pend">🔴 AO VIVO</div>'
+            badge = '<span class="badge-pend" style="background:#fadbd8;color:#943126">⚽</span>'
+            status_txt = fmt_dh(dh)
         else:
             resultado_html = '<div class="jogo-pend">— × —</div>'
             badge = '<span class="badge-pend">⏳</span>'
+            status_txt = contagem_regressiva(dh)
 
         st.markdown(f"""
         <div class="jogo-row">
             <div class="jogo-num">#{game['id']}</div>
-            <div class="jogo-fase">{game['detalhe']}</div>
-            <div class="jogo-time">{mandante}</div>
+            <div class="jogo-fase">{game['detalhe']}<br><span style="color:#aaa;font-size:0.7rem">{status_txt}</span></div>
+            <div class="jogo-time">{lbl(mandante)}</div>
             {resultado_html}
-            <div class="jogo-time" style="text-align:right">{visitante}</div>
+            <div class="jogo-time" style="text-align:right">{lbl(visitante)}</div>
             {badge}
         </div>
         """, unsafe_allow_html=True)
@@ -660,8 +796,8 @@ elif pagina == "🔒 Admin":
         st.session_state["admin_ok"] = False
         st.rerun()
 
-    tab_res, tab_times, tab_init = st.tabs(
-        ["⚽ Lançar Resultados", "🔄 Atualizar Times (Mata-Mata)", "🗄️ Inicializar BD"]
+    tab_res, tab_horarios, tab_times, tab_init = st.tabs(
+        ["⚽ Lançar Resultados", "🕐 Horários dos Jogos", "🔄 Atualizar Times (Mata-Mata)", "🗄️ Inicializar BD"]
     )
 
     # ── RESULTADOS ───────────────────────────────────────
@@ -718,6 +854,91 @@ elif pagina == "🔒 Admin":
                     clear_cache()
                     st.success(f"✅ {gm} × {gv} salvo!")
                     st.rerun()
+
+    # ── HORARIOS DOS JOGOS ───────────────────────────────
+    with tab_horarios:
+        st.subheader("🕐 Definir Data e Hora dos Jogos")
+        st.info(
+            "Defina o horário de cada jogo. As apostas dos participantes "
+            "**travam automaticamente** quando o horário do jogo chega. "
+            "Horário em **Brasília (UTC-3)**."
+        )
+
+        resultados = get_resultados()
+
+        fase_h = st.selectbox(
+            "Fase:", ["Grupos"] + KO_FASE_NAMES, key="hor_fase"
+        )
+        if fase_h == "Grupos":
+            grupo_h = st.selectbox(
+                "Grupo:", [f"Grupo {g}" for g in GROUP_LETTERS], key="hor_grupo"
+            )
+            letra_h = grupo_h.split(" ")[1]
+            games_h = [g for g in ALL_GAMES if g.get("grupo") == letra_h]
+        else:
+            games_h = [g for g in ALL_GAMES if g["fase"] == fase_h]
+
+        # Set all at once option
+        with st.expander("⚡ Definir TODOS os horários desta fase de uma vez"):
+            colA, colB, colC = st.columns(3)
+            data_base = colA.date_input("Data inicial:", key="bulk_data")
+            hora_base = colB.time_input("Hora do 1º jogo:", key="bulk_hora")
+            intervalo_h = colC.number_input("Horas entre jogos:", 1, 24, 3, key="bulk_int")
+            if st.button("✨ Aplicar para todos abaixo", key="bulk_btn"):
+                from datetime import datetime as _dt, timedelta as _td
+                cur = _dt.combine(data_base, hora_base).replace(tzinfo=BR_TZ)
+                for game in games_h:
+                    iso = cur.isoformat()
+                    res = resultados.get(game["id"])
+                    mandante  = (res or {}).get("mandante") or game["mandante"]
+                    visitante = (res or {}).get("visitante") or game["visitante"]
+                    payload = {
+                        "jogo_id": game["id"], "data_hora": iso,
+                        "mandante": mandante, "visitante": visitante,
+                    }
+                    if res:
+                        db.table("resultados").update({"data_hora": iso}).eq("jogo_id", game["id"]).execute()
+                    else:
+                        db.table("resultados").insert(payload).execute()
+                    cur += _td(hours=intervalo_h)
+                clear_cache()
+                st.success(f"✅ Horários definidos para {len(games_h)} jogos!")
+                st.rerun()
+
+        st.markdown("---")
+        st.subheader("Ou definir um por um:")
+
+        for game in games_h:
+            res = resultados.get(game["id"], {})
+            mandante  = res.get("mandante") or game["mandante"]
+            visitante = res.get("visitante") or game["visitante"]
+            dh_atual = parse_dh(res.get("data_hora"))
+
+            with st.expander(
+                f"#{game['id']}  {lbl(mandante)} × {lbl(visitante)}  ·  "
+                f"{fmt_dh(res.get('data_hora')) if res.get('data_hora') else '— sem horário —'}"
+            ):
+                col1, col2, col3 = st.columns([2, 2, 1])
+                d_val = dh_atual.date() if dh_atual else None
+                t_val = dh_atual.time().replace(second=0, microsecond=0) if dh_atual else None
+                data_in = col1.date_input("Data", value=d_val, key=f"dt_{game['id']}")
+                hora_in = col2.time_input("Hora", value=t_val, key=f"hr_{game['id']}")
+                if col3.button("💾 Salvar", key=f"sh_{game['id']}", type="primary"):
+                    if data_in and hora_in:
+                        from datetime import datetime as _dt
+                        iso = _dt.combine(data_in, hora_in).replace(tzinfo=BR_TZ).isoformat()
+                        if res:
+                            db.table("resultados").update({"data_hora": iso}).eq("jogo_id", game["id"]).execute()
+                        else:
+                            db.table("resultados").insert({
+                                "jogo_id": game["id"], "data_hora": iso,
+                                "mandante": mandante, "visitante": visitante,
+                            }).execute()
+                        clear_cache()
+                        st.success(f"✅ Horário {fmt_dh(iso)} salvo!")
+                        st.rerun()
+                    else:
+                        st.error("Defina data e hora.")
 
     # ── TIMES MATA-MATA ──────────────────────────────────
     with tab_times:
