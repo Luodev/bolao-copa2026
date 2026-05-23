@@ -105,6 +105,13 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# Data oficial de inicio da Copa 2026 (jogo de abertura)
+COPA_START = datetime(2026, 6, 11, 16, 0, tzinfo=BR_TZ)
+PTS_CAMPEAO = 15
+
+def copa_comecou() -> bool:
+    return now_br() >= COPA_START
+
 # ─────────────────────────────────────────────
 # GAME DATA
 # ─────────────────────────────────────────────
@@ -159,6 +166,7 @@ def build_games():
 ALL_GAMES = build_games()
 GROUP_LETTERS = list(GROUPS.keys())
 KO_FASE_NAMES = [p[0] for p in KO_PHASES]
+ALL_TEAMS_LIST = sorted({t for ts in GROUPS.values() for t in ts})
 
 
 # ─────────────────────────────────────────────
@@ -197,6 +205,23 @@ def get_palpites_part(participante_id: int):
     return {p["jogo_id"]: p for p in rows}
 
 
+@st.cache_data(ttl=30)
+def get_config(chave: str):
+    res = db.table("configuracao").select("*").eq("chave", chave).execute()
+    if res.data:
+        return res.data[0]["valor"]
+    return None
+
+
+def set_config(chave: str, valor: str):
+    existing = db.table("configuracao").select("chave").eq("chave", chave).execute()
+    if existing.data:
+        db.table("configuracao").update({"valor": valor}).eq("chave", chave).execute()
+    else:
+        db.table("configuracao").insert({"chave": chave, "valor": valor}).execute()
+    get_config.clear()
+
+
 # ─────────────────────────────────────────────
 # SCORING
 # ─────────────────────────────────────────────
@@ -215,6 +240,7 @@ def calcular_pontos(pm, pv, rm, rv):
 def calcular_ranking():
     resultados = get_resultados()
     partes = get_participantes()
+    campeao_oficial = get_config("campeao_oficial")
     ranking = []
     for p in partes:
         palpites = get_palpites_part(p["id"])
@@ -227,18 +253,22 @@ def calcular_ranking():
                 pal["gols_mandante"], pal["gols_visitante"],
                 res["gols_mandante"], res["gols_visitante"],
             )
-            # find game fase
             game = next((g for g in ALL_GAMES if g["id"] == jid), None)
             if game and game["fase"] == "Grupos":
                 pts_g += pts
             else:
                 pts_m += pts
+        pts_camp = 0
+        if campeao_oficial and p.get("palpite_campeao") and p["palpite_campeao"] == campeao_oficial:
+            pts_camp = PTS_CAMPEAO
         ranking.append({
             "nome": p["apelido"] or p["nome"],
             "nome_completo": p["nome"],
+            "palpite_campeao": p.get("palpite_campeao"),
             "pts_grupos": pts_g,
             "pts_mata": pts_m,
-            "total": pts_g + pts_m,
+            "pts_camp": pts_camp,
+            "total": pts_g + pts_m + pts_camp,
         })
     return sorted(ranking, key=lambda x: (-x["total"], x["nome"]))
 
@@ -363,7 +393,7 @@ if pagina == "🏆 Ranking":
             <div class="rank-row {cls}">
                 <div class="rk-pos">{emoji}</div>
                 <div class="rk-nome">{p['nome']}
-                    <div class="rk-det">Grupos: {p['pts_grupos']} pts &nbsp;|&nbsp; Mata: {p['pts_mata']} pts</div>
+                    <div class="rk-det">Grupos: {p['pts_grupos']} &nbsp;|&nbsp; Mata: {p['pts_mata']} &nbsp;|&nbsp; 🏆 Campeão: {p['pts_camp']}</div>
                 </div>
                 <div class="rk-pts">{p['total']} pts</div>
             </div>
@@ -373,9 +403,9 @@ if pagina == "🏆 Ranking":
 
         # Pontuação tabela
         with st.expander("Ver tabela completa"):
-            df = pd.DataFrame(ranking)[["nome", "pts_grupos", "pts_mata", "total"]].copy()
+            df = pd.DataFrame(ranking)[["nome", "pts_grupos", "pts_mata", "pts_camp", "total"]].copy()
             df.index = range(1, len(df) + 1)
-            df.columns = ["Nome", "Pts Grupos", "Pts Mata-Mata", "Total"]
+            df.columns = ["Nome", "Pts Grupos", "Pts Mata", "Pts Campeão", "Total"]
             st.dataframe(df, use_container_width=True)
 
 
@@ -384,21 +414,89 @@ if pagina == "🏆 Ranking":
 # ═══════════════════════════════════════════════════════════
 elif pagina == "📝 Meus Palpites":
     st.markdown('<p class="page-title">📝 Meus Palpites</p>', unsafe_allow_html=True)
-    st.markdown('<p class="subtitle">Selecione seu nome e preencha seus palpites</p>', unsafe_allow_html=True)
 
     partes = get_participantes()
     if not partes:
         st.warning("Nenhum participante cadastrado. Acesse 👥 Participantes primeiro.")
         st.stop()
 
-    nome_sel = st.selectbox("Seu nome:", [p["nome"] for p in partes])
-    part = next(p for p in partes if p["nome"] == nome_sel)
+    # ── LOGIN COM PIN ──────────────────────────────
+    if "logged_part_id" not in st.session_state:
+        st.session_state.logged_part_id = None
+
+    if st.session_state.logged_part_id is None:
+        st.markdown('<p class="subtitle">🔐 Entre com seu nome e PIN para palpitar</p>', unsafe_allow_html=True)
+        with st.form("login_palpites"):
+            nome_in = st.selectbox("Seu nome:", [p["nome"] for p in partes])
+            pin_in  = st.text_input("Seu PIN (numérico):", type="password", max_chars=10)
+            entrar = st.form_submit_button("🔓 Entrar", type="primary", use_container_width=True)
+            if entrar:
+                pm = next((p for p in partes if p["nome"] == nome_in), None)
+                if pm is None:
+                    st.error("Participante não encontrado.")
+                elif not pm.get("pin"):
+                    st.error("Você ainda não tem PIN cadastrado. Vá em 👥 Participantes para definir.")
+                elif str(pm["pin"]) != str(pin_in):
+                    st.error("PIN incorreto.")
+                else:
+                    st.session_state.logged_part_id = pm["id"]
+                    st.rerun()
+        st.info("👉 Ainda não tem conta? Vá em **👥 Participantes** e cadastre-se com um PIN.")
+        st.stop()
+
+    part = next((p for p in partes if p["id"] == st.session_state.logged_part_id), None)
+    if part is None:
+        st.session_state.logged_part_id = None
+        st.rerun()
     part_id = part["id"]
+
+    col_h1, col_h2 = st.columns([4, 1])
+    col_h1.success(f"👋 Bem-vindo(a), **{part['nome']}**!")
+    if col_h2.button("🚪 Sair", use_container_width=True):
+        st.session_state.logged_part_id = None
+        st.rerun()
 
     resultados = get_resultados()
     palpites   = get_palpites_part(part_id)
 
-    tab_g, tab_m = st.tabs(["⚽ Fase de Grupos (72 jogos)", "🏆 Mata-Mata (30 jogos)"])
+    tab_c, tab_g, tab_m = st.tabs([
+        "🏆 Palpite Campeão (15 pts)",
+        "⚽ Fase de Grupos (72 jogos)",
+        "🏆 Mata-Mata (30 jogos)",
+    ])
+
+    # ── PALPITE CAMPEAO ──────────────────────────────
+    with tab_c:
+        st.markdown("### 🏆 Quem será o Campeão da Copa 2026?")
+        st.markdown(
+            f"**Vale 15 pontos** se você acertar. "
+            f"⚠️ Só pode ser definido **antes do início da Copa** "
+            f"({COPA_START.strftime('%d/%m/%Y às %H:%M')})."
+        )
+
+        atual = part.get("palpite_campeao")
+        if atual:
+            st.info(f"Seu palpite atual: **{flag(atual)} {atual}**")
+
+        if copa_comecou():
+            st.warning("🔒 As apostas para o campeão foram **encerradas** (a Copa já começou).")
+            st.markdown(f"### Seu palpite final: **{flag(atual) if atual else '⚽'} {atual or '— não definido —'}**")
+        else:
+            opcoes = ["— selecionar —"] + [f"{flag(t)} {t}" for t in ALL_TEAMS_LIST]
+            valor_atual = f"{flag(atual)} {atual}" if atual else "— selecionar —"
+            idx = opcoes.index(valor_atual) if valor_atual in opcoes else 0
+            sel = st.selectbox("Escolha um time:", opcoes, index=idx, key="camp_sel")
+            if st.button("💾 Salvar Palpite do Campeão", type="primary", use_container_width=True):
+                if sel == "— selecionar —":
+                    st.error("Selecione um time.")
+                else:
+                    time_escolhido = sel.split(" ", 1)[1]  # remove flag emoji
+                    db.table("participantes").update({
+                        "palpite_campeao": time_escolhido
+                    }).eq("id", part_id).execute()
+                    get_participantes.clear()
+                    st.success(f"✅ Palpite salvo: {sel}")
+                    st.rerun()
 
     # ── GRUPOS ──────────────────────────────────────
     with tab_g:
@@ -658,25 +756,52 @@ elif pagina == "👥 Participantes":
         st.info("Nenhum participante cadastrado ainda.")
 
     st.markdown("---")
-    st.subheader("Cadastrar novo participante")
+    st.subheader("📝 Cadastrar novo participante")
+    st.caption("Escolha um PIN numérico (4 a 6 dígitos). Você precisará dele para palpitar.")
 
     with st.form("form_part"):
         col1, col2 = st.columns(2)
         nome    = col1.text_input("Nome *")
         apelido = col2.text_input("Apelido (opcional)")
+        col3, col4 = st.columns(2)
+        pin     = col3.text_input("PIN * (4 a 6 dígitos)", type="password", max_chars=6)
+        pin2    = col4.text_input("Confirmar PIN *", type="password", max_chars=6)
 
         if st.form_submit_button("✅ Cadastrar", type="primary"):
             if not nome.strip():
                 st.error("Nome é obrigatório.")
+            elif not pin or not pin.isdigit() or len(pin) < 4:
+                st.error("PIN deve ter 4 a 6 dígitos numéricos.")
+            elif pin != pin2:
+                st.error("PINs não conferem.")
             elif any(p["nome"].lower() == nome.strip().lower() for p in partes):
                 st.error("Já existe um participante com esse nome.")
             else:
                 db.table("participantes").insert({
                     "nome": nome.strip(),
                     "apelido": apelido.strip() or None,
+                    "pin": pin,
                 }).execute()
                 clear_cache()
-                st.success(f"✅ {nome.strip()} cadastrado!")
+                st.success(f"✅ {nome.strip()} cadastrado! Guarde seu PIN.")
+                st.rerun()
+
+    st.markdown("---")
+    st.subheader("🔑 Esqueci/Não tenho PIN")
+    st.caption("Se você se cadastrou antes do sistema de PIN, defina o seu agora.")
+    with st.form("form_pin_set"):
+        nome_p = st.selectbox("Selecione seu nome:", [p["nome"] for p in partes] if partes else ["—"])
+        pin_n  = st.text_input("Novo PIN (4-6 dígitos)", type="password", max_chars=6)
+        if st.form_submit_button("Definir PIN"):
+            part_target = next((p for p in partes if p["nome"] == nome_p), None)
+            if part_target and part_target.get("pin"):
+                st.error("Esse participante já tem PIN. Para resetar, peça ao admin.")
+            elif not pin_n or not pin_n.isdigit() or len(pin_n) < 4:
+                st.error("PIN deve ter 4 a 6 dígitos.")
+            elif part_target:
+                db.table("participantes").update({"pin": pin_n}).eq("id", part_target["id"]).execute()
+                clear_cache()
+                st.success("✅ PIN definido!")
                 st.rerun()
 
 
@@ -796,8 +921,9 @@ elif pagina == "🔒 Admin":
         st.session_state["admin_ok"] = False
         st.rerun()
 
-    tab_res, tab_horarios, tab_times, tab_init = st.tabs(
-        ["⚽ Lançar Resultados", "🕐 Horários dos Jogos", "🔄 Atualizar Times (Mata-Mata)", "🗄️ Inicializar BD"]
+    tab_res, tab_horarios, tab_times, tab_camp, tab_pins, tab_init = st.tabs(
+        ["⚽ Lançar Resultados", "🕐 Horários", "🔄 Times (Mata-Mata)",
+         "🏆 Campeão Oficial", "🔑 Gerenciar PINs", "🗄️ Inicializar BD"]
     )
 
     # ── RESULTADOS ───────────────────────────────────────
@@ -964,6 +1090,69 @@ elif pagina == "🔒 Admin":
                     clear_cache()
                     st.success("✅ Times atualizados!")
                     st.rerun()
+
+    # ── CAMPEAO OFICIAL ──────────────────────────────────
+    with tab_camp:
+        st.subheader("🏆 Definir Campeão Oficial da Copa")
+        st.info(
+            f"Defina o time campeão **após a final**. Quem palpitou esse time ganha {PTS_CAMPEAO} pontos.\n\n"
+            f"As apostas dos participantes para o campeão fecham automaticamente em **{COPA_START.strftime('%d/%m/%Y às %H:%M')}**."
+        )
+
+        camp_atual = get_config("campeao_oficial")
+        if camp_atual:
+            st.success(f"Campeão atual: **{flag(camp_atual)} {camp_atual}**")
+        else:
+            st.warning("⏳ Campeão ainda não definido")
+
+        opcoes = ["— sem campeão definido —"] + [f"{flag(t)} {t}" for t in ALL_TEAMS_LIST]
+        valor_default = f"{flag(camp_atual)} {camp_atual}" if camp_atual else "— sem campeão definido —"
+        idx_def = opcoes.index(valor_default) if valor_default in opcoes else 0
+        sel_camp = st.selectbox("Selecionar campeão:", opcoes, index=idx_def, key="admin_camp_sel")
+        if st.button("💾 Salvar Campeão Oficial", type="primary"):
+            if sel_camp == "— sem campeão definido —":
+                set_config("campeao_oficial", "")
+                clear_cache()
+                st.success("Campeão limpo.")
+            else:
+                time = sel_camp.split(" ", 1)[1]
+                set_config("campeao_oficial", time)
+                clear_cache()
+                st.success(f"✅ Campeão oficial: {sel_camp} — pontos distribuídos automaticamente!")
+            st.rerun()
+
+        st.markdown("---")
+        st.subheader("📊 Quem palpitou em quê")
+        partes_aq = get_participantes()
+        if partes_aq:
+            palpites_camp = [
+                {"Nome": p["nome"], "Palpite": (flag(p["palpite_campeao"]) + " " + p["palpite_campeao"]) if p.get("palpite_campeao") else "— sem palpite —"}
+                for p in partes_aq
+            ]
+            df_camp = pd.DataFrame(palpites_camp)
+            df_camp.index = range(1, len(df_camp) + 1)
+            st.dataframe(df_camp, use_container_width=True)
+
+    # ── GERENCIAR PINS ───────────────────────────────────
+    with tab_pins:
+        st.subheader("🔑 Gerenciar PINs dos Participantes")
+        st.info("Use para resetar PIN de participantes que esqueceram.")
+
+        partes_pins = get_participantes()
+        for p in partes_pins:
+            has_pin = "✅" if p.get("pin") else "❌"
+            with st.expander(f"{has_pin} {p['nome']}"):
+                col1, col2 = st.columns([3, 1])
+                novo_pin = col1.text_input("Novo PIN (4-6 dígitos)", type="password",
+                                            max_chars=6, key=f"newpin_{p['id']}")
+                if col2.button("🔄 Resetar", key=f"reset_{p['id']}", type="primary"):
+                    if novo_pin and novo_pin.isdigit() and len(novo_pin) >= 4:
+                        db.table("participantes").update({"pin": novo_pin}).eq("id", p["id"]).execute()
+                        clear_cache()
+                        st.success(f"PIN de {p['nome']} resetado!")
+                        st.rerun()
+                    else:
+                        st.error("PIN deve ter 4-6 dígitos numéricos.")
 
     # ── INICIALIZAR BD ───────────────────────────────────
     with tab_init:

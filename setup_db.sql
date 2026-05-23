@@ -26,6 +26,19 @@ CREATE TABLE IF NOT EXISTS resultados (
 -- Se a tabela ja existe sem essa coluna:
 ALTER TABLE resultados ADD COLUMN IF NOT EXISTS data_hora TIMESTAMPTZ;
 
+-- PIN para login e palpite do campeao na tabela participantes
+ALTER TABLE participantes ADD COLUMN IF NOT EXISTS pin VARCHAR(10);
+ALTER TABLE participantes ADD COLUMN IF NOT EXISTS palpite_campeao VARCHAR(100);
+
+-- Tabela de configuracao (campeao oficial, etc)
+CREATE TABLE IF NOT EXISTS configuracao (
+    chave VARCHAR(50) PRIMARY KEY,
+    valor TEXT,
+    atualizado_em TIMESTAMP DEFAULT NOW()
+);
+ALTER TABLE configuracao DISABLE ROW LEVEL SECURITY;
+GRANT ALL ON TABLE configuracao TO anon, authenticated, service_role;
+
 -- 3. Palpites de cada participante
 CREATE TABLE IF NOT EXISTS palpites (
     id              SERIAL PRIMARY KEY,
