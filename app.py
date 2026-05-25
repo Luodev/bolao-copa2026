@@ -1,3 +1,4 @@
+import re
 import streamlit as st
 import pandas as pd
 from supabase import create_client
@@ -50,7 +51,6 @@ def now_br():
     return datetime.now(BR_TZ)
 
 def parse_dh(dh):
-    """Aceita string ISO ou datetime — retorna datetime ciente de tz."""
     if not dh:
         return None
     if isinstance(dh, str):
@@ -65,14 +65,12 @@ def parse_dh(dh):
     return d.astimezone(BR_TZ)
 
 def esta_travado(dh) -> bool:
-    """Retorna True se o jogo ja comecou (apostas travadas)."""
     d = parse_dh(dh)
     if not d:
         return False
     return now_br() >= d
 
 def contagem_regressiva(dh) -> str:
-    """Formata a contagem ate o jogo ou 'apostas fechadas'."""
     d = parse_dh(dh)
     if not d:
         return "🕐 Horário a definir"
@@ -105,7 +103,6 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Data oficial de inicio da Copa 2026 (jogo de abertura)
 COPA_START = datetime(2026, 6, 11, 16, 0, tzinfo=BR_TZ)
 PTS_CAMPEAO = 15
 
@@ -139,7 +136,6 @@ KO_PHASES = [
     ("Final", 1),
 ]
 
-
 @st.cache_data
 def build_games():
     games, num = [], 1
@@ -160,14 +156,12 @@ def build_games():
                 "mandante": "A definir", "visitante": "A definir",
             })
             num += 1
-    return games  # 102 games total
+    return games
 
-
-ALL_GAMES = build_games()
-GROUP_LETTERS = list(GROUPS.keys())
-KO_FASE_NAMES = [p[0] for p in KO_PHASES]
+ALL_GAMES      = build_games()
+GROUP_LETTERS  = list(GROUPS.keys())
+KO_FASE_NAMES  = [p[0] for p in KO_PHASES]
 ALL_TEAMS_LIST = sorted({t for ts in GROUPS.values() for t in ts})
-
 
 # ─────────────────────────────────────────────
 # SUPABASE
@@ -176,102 +170,39 @@ ALL_TEAMS_LIST = sorted({t for ts in GROUPS.values() for t in ts})
 def get_db():
     return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
 
-
 db = get_db()
 
-
-def clear_cache():
-    get_participantes.clear()
-    get_resultados.clear()
-    get_palpites_part.clear()
-
-
-@st.cache_data(ttl=20)
-def get_participantes():
-    return db.table("participantes").select("*").order("nome").execute().data
-
-
-@st.cache_data(ttl=10)
-def get_resultados():
-    """Returns dict jogo_id -> {gols_mandante, gols_visitante, mandante, visitante}"""
-    rows = db.table("resultados").select("*").execute().data
-    return {r["jogo_id"]: r for r in rows}
-
-
-@st.cache_data(ttl=10)
-def get_palpites_part(participante_id: int):
-    """Returns dict jogo_id -> {gols_mandante, gols_visitante}"""
-    rows = db.table("palpites").select("*").eq("participante_id", participante_id).execute().data
-    return {p["jogo_id"]: p for p in rows}
-
-
-@st.cache_data(ttl=30)
-def get_config(chave: str):
-    res = db.table("configuracao").select("*").eq("chave", chave).execute()
-    if res.data:
-        return res.data[0]["valor"]
-    return None
-
-
-def set_config(chave: str, valor: str):
-    existing = db.table("configuracao").select("chave").eq("chave", chave).execute()
-    if existing.data:
-        db.table("configuracao").update({"valor": valor}).eq("chave", chave).execute()
-    else:
-        db.table("configuracao").insert({"chave": chave, "valor": valor}).execute()
-    get_config.clear()
-
-
 # ─────────────────────────────────────────────
-# SCORING
+# MULTI-TENANT: BOLÕES
 # ─────────────────────────────────────────────
-def resultado_sinal(m, v):
-    return 1 if m > v else (-1 if m < v else 0)
+def slugify(texto: str) -> str:
+    s = texto.lower().strip()
+    for src, dst in [('á','a'),('à','a'),('ã','a'),('â','a'),('ä','a'),
+                     ('é','e'),('è','e'),('ê','e'),('ë','e'),
+                     ('í','i'),('ì','i'),('î','i'),('ï','i'),
+                     ('ó','o'),('ò','o'),('õ','o'),('ô','o'),('ö','o'),
+                     ('ú','u'),('ù','u'),('û','u'),('ü','u'),('ç','c')]:
+        s = s.replace(src, dst)
+    s = re.sub(r'[^a-z0-9\-]', '-', s)
+    s = re.sub(r'-+', '-', s)
+    return s.strip('-')
 
+@st.cache_data(ttl=60)
+def get_bolao_by_slug(slug: str):
+    res = db.table("boloes").select("*").eq("slug", slug.lower().strip()).execute()
+    return res.data[0] if res.data else None
 
-def calcular_pontos(pm, pv, rm, rv):
-    if pm == rm and pv == rv:
-        return 3
-    if resultado_sinal(pm, pv) == resultado_sinal(rm, rv):
-        return 1
-    return 0
-
-
-def calcular_ranking():
-    resultados = get_resultados()
-    partes = get_participantes()
-    campeao_oficial = get_config("campeao_oficial")
-    ranking = []
-    for p in partes:
-        palpites = get_palpites_part(p["id"])
-        pts_g = pts_m = 0
-        for jid, pal in palpites.items():
-            res = resultados.get(jid)
-            if res is None or res.get("gols_mandante") is None:
-                continue
-            pts = calcular_pontos(
-                pal["gols_mandante"], pal["gols_visitante"],
-                res["gols_mandante"], res["gols_visitante"],
-            )
-            game = next((g for g in ALL_GAMES if g["id"] == jid), None)
-            if game and game["fase"] == "Grupos":
-                pts_g += pts
-            else:
-                pts_m += pts
-        pts_camp = 0
-        if campeao_oficial and p.get("palpite_campeao") and p["palpite_campeao"] == campeao_oficial:
-            pts_camp = PTS_CAMPEAO
-        ranking.append({
-            "nome": p["apelido"] or p["nome"],
-            "nome_completo": p["nome"],
-            "palpite_campeao": p.get("palpite_campeao"),
-            "pts_grupos": pts_g,
-            "pts_mata": pts_m,
-            "pts_camp": pts_camp,
-            "total": pts_g + pts_m + pts_camp,
-        })
-    return sorted(ranking, key=lambda x: (-x["total"], x["nome"]))
-
+def criar_bolao(slug: str, nome: str, admin_password: str):
+    try:
+        res = db.table("boloes").insert({
+            "slug": slug,
+            "nome": nome,
+            "admin_password": admin_password,
+        }).execute()
+        get_bolao_by_slug.clear()
+        return res.data[0] if res.data else None, None
+    except Exception as e:
+        return None, str(e)
 
 # ─────────────────────────────────────────────
 # CSS
@@ -343,15 +274,269 @@ div[data-testid="stNumberInput"] input { text-align: center; font-weight: 600; }
 .group-title { font-weight: 700; color: #1a1a2e; margin-bottom: 6px; font-size: 0.95rem; }
 .group-team  { padding: 3px 0; font-size: 0.88rem; color: #444; border-bottom: 1px solid #f0f0f0; }
 .group-team:last-child { border-bottom: none; }
+
+/* Landing page */
+.landing-hero {
+    text-align: center; padding: 48px 24px 32px;
+}
+.landing-title {
+    font-size: 3rem; font-weight: 900;
+    background: linear-gradient(90deg, #1E8449, #27AE60, #F1C40F);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    margin-bottom: 8px;
+}
+.landing-sub { color: #666; font-size: 1.1rem; margin-bottom: 32px; }
+.card-bolao {
+    background: white; border-radius: 16px; padding: 28px;
+    box-shadow: 0 4px 20px rgba(0,0,0,.08); margin: 8px 0;
+}
+.share-box {
+    background: #f0faf4; border: 2px solid #27AE60; border-radius: 10px;
+    padding: 12px 18px; font-family: monospace; font-size: 0.95rem;
+    color: #1E8449; font-weight: 600; word-break: break-all;
+}
 </style>
 """, unsafe_allow_html=True)
+
+# ─────────────────────────────────────────────
+# LANDING PAGE (sem ?bolao=)
+# ─────────────────────────────────────────────
+slug_url = st.query_params.get("bolao", "")
+
+if not slug_url:
+    st.markdown("""
+    <div class="landing-hero">
+        <div class="landing-title">⚽ Bolão Copa 2026</div>
+        <div class="landing-sub">Crie seu bolão grátis e compartilhe o link com seus amigos!</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col_criar, col_entrar = st.columns(2)
+
+    with col_criar:
+        st.markdown('<div class="card-bolao">', unsafe_allow_html=True)
+        st.markdown("### 🆕 Criar meu bolão")
+        st.markdown("Configure um bolão novo em segundos.")
+        with st.form("form_criar_bolao"):
+            nome_bolao = st.text_input("Nome do bolão *", placeholder="Ex: Bolão do Escritório")
+            slug_sugerido = slugify(nome_bolao) if nome_bolao else ""
+            st.caption(f"🔗 URL: `?bolao={slug_sugerido}`" if slug_sugerido else "")
+            slug_custom = st.text_input(
+                "Slug personalizado (opcional)",
+                value=slug_sugerido,
+                placeholder="bolao-do-escritorio",
+                help="Apenas letras minúsculas, números e hífens. Sem espaços."
+            )
+            admin_pass = st.text_input(
+                "Senha do admin *",
+                type="password",
+                placeholder="Escolha uma senha forte",
+                help="Você precisará dessa senha para lançar resultados.",
+            )
+            admin_pass2 = st.text_input("Confirmar senha *", type="password")
+
+            criar_btn = st.form_submit_button("🚀 Criar Bolão", type="primary", use_container_width=True)
+            if criar_btn:
+                slug_final = slugify(slug_custom) if slug_custom else slug_sugerido
+                if not nome_bolao.strip():
+                    st.error("Nome do bolão é obrigatório.")
+                elif not slug_final:
+                    st.error("Slug inválido.")
+                elif not admin_pass or len(admin_pass) < 4:
+                    st.error("Senha deve ter ao menos 4 caracteres.")
+                elif admin_pass != admin_pass2:
+                    st.error("Senhas não conferem.")
+                elif get_bolao_by_slug(slug_final):
+                    st.error(f"O slug '{slug_final}' já está em uso. Escolha outro.")
+                else:
+                    bolao_novo, erro = criar_bolao(slug_final, nome_bolao.strip(), admin_pass)
+                    if bolao_novo:
+                        st.success(f"✅ Bolão criado! Redirecionando...")
+                        st.query_params["bolao"] = slug_final
+                        st.rerun()
+                    else:
+                        st.error(f"Erro ao criar bolão: {erro}")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    with col_entrar:
+        st.markdown('<div class="card-bolao">', unsafe_allow_html=True)
+        st.markdown("### 🔗 Entrar em um bolão")
+        st.markdown("Já tem o link? Cole o slug abaixo.")
+        slug_join = st.text_input("Slug do bolão", placeholder="bolao-do-escritorio")
+        if st.button("➡️ Entrar", type="primary", use_container_width=True):
+            if slug_join.strip():
+                b = get_bolao_by_slug(slugify(slug_join.strip()))
+                if b:
+                    st.query_params["bolao"] = b["slug"]
+                    st.rerun()
+                else:
+                    st.error(f"Bolão '{slug_join}' não encontrado.")
+            else:
+                st.error("Digite o slug do bolão.")
+
+        st.markdown("---")
+        st.markdown("#### 💡 Como funciona?")
+        st.markdown("""
+        1. **Crie** seu bolão dando um nome
+        2. **Compartilhe** o link com seus amigos
+        3. **Cada um** se cadastra e faz seus palpites
+        4. **Você** lança os resultados como admin
+        5. **O ranking** atualiza automaticamente!
+        """)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("""
+    <div style='text-align:center; color:#aaa; font-size:0.85rem'>
+        ⚽ Bolão Copa 2026 · Grátis · Sem cadastro extra · Compartilhe com qualquer pessoa
+    </div>
+    """, unsafe_allow_html=True)
+    st.stop()
+
+# ─────────────────────────────────────────────
+# CARREGAR BOLÃO DO URL
+# ─────────────────────────────────────────────
+bolao_info = get_bolao_by_slug(slug_url)
+
+if bolao_info is None:
+    st.error(f"❌ Bolão **'{slug_url}'** não encontrado.")
+    st.markdown("Verifique o link ou [crie um novo bolão](?)")
+    st.stop()
+
+BOLAO_ID        = bolao_info["id"]
+BOLAO_NOME      = bolao_info["nome"]
+BOLAO_ADMIN_PWD = bolao_info.get("admin_password", "copa2026admin")
+BOLAO_SLUG      = bolao_info["slug"]
+
+# URL de compartilhamento (montada a partir da URL atual)
+try:
+    BASE_URL = st.secrets.get("APP_URL", "https://bolaoloop.streamlit.app")
+except Exception:
+    BASE_URL = "https://bolaoloop.streamlit.app"
+SHARE_URL = f"{BASE_URL}/?bolao={BOLAO_SLUG}"
+
+# ─────────────────────────────────────────────
+# DB FUNCTIONS (filtradas por BOLAO_ID)
+# ─────────────────────────────────────────────
+def clear_cache():
+    get_participantes.clear()
+    get_resultados.clear()
+    get_palpites_part.clear()
+    get_config.clear()
+
+
+@st.cache_data(ttl=20)
+def get_participantes(bolao_id: int):
+    return (
+        db.table("participantes")
+        .select("*")
+        .eq("bolao_id", bolao_id)
+        .order("nome")
+        .execute()
+        .data
+    )
+
+
+@st.cache_data(ttl=10)
+def get_resultados(bolao_id: int):
+    rows = (
+        db.table("resultados")
+        .select("*")
+        .eq("bolao_id", bolao_id)
+        .execute()
+        .data
+    )
+    return {r["jogo_id"]: r for r in rows}
+
+
+@st.cache_data(ttl=10)
+def get_palpites_part(participante_id: int):
+    rows = (
+        db.table("palpites")
+        .select("*")
+        .eq("participante_id", participante_id)
+        .execute()
+        .data
+    )
+    return {p["jogo_id"]: p for p in rows}
+
+
+@st.cache_data(ttl=30)
+def get_config(chave: str):
+    """Chave namespaceada: '{BOLAO_ID}:{chave}'"""
+    key = f"{BOLAO_ID}:{chave}"
+    res = db.table("configuracao").select("*").eq("chave", key).execute()
+    if res.data:
+        return res.data[0]["valor"]
+    return None
+
+
+def set_config(chave: str, valor: str):
+    key = f"{BOLAO_ID}:{chave}"
+    existing = db.table("configuracao").select("chave").eq("chave", key).execute()
+    if existing.data:
+        db.table("configuracao").update({"valor": valor}).eq("chave", key).execute()
+    else:
+        db.table("configuracao").insert({"chave": key, "valor": valor}).execute()
+    get_config.clear()
+
+
+# ─────────────────────────────────────────────
+# SCORING
+# ─────────────────────────────────────────────
+def resultado_sinal(m, v):
+    return 1 if m > v else (-1 if m < v else 0)
+
+
+def calcular_pontos(pm, pv, rm, rv):
+    if pm == rm and pv == rv:
+        return 3
+    if resultado_sinal(pm, pv) == resultado_sinal(rm, rv):
+        return 1
+    return 0
+
+
+def calcular_ranking():
+    resultados = get_resultados(BOLAO_ID)
+    partes = get_participantes(BOLAO_ID)
+    campeao_oficial = get_config("campeao_oficial")
+    ranking = []
+    for p in partes:
+        palpites = get_palpites_part(p["id"])
+        pts_g = pts_m = 0
+        for jid, pal in palpites.items():
+            res = resultados.get(jid)
+            if res is None or res.get("gols_mandante") is None:
+                continue
+            pts = calcular_pontos(
+                pal["gols_mandante"], pal["gols_visitante"],
+                res["gols_mandante"], res["gols_visitante"],
+            )
+            game = next((g for g in ALL_GAMES if g["id"] == jid), None)
+            if game and game["fase"] == "Grupos":
+                pts_g += pts
+            else:
+                pts_m += pts
+        pts_camp = 0
+        if campeao_oficial and p.get("palpite_campeao") and p["palpite_campeao"] == campeao_oficial:
+            pts_camp = PTS_CAMPEAO
+        ranking.append({
+            "nome": p["apelido"] or p["nome"],
+            "nome_completo": p["nome"],
+            "palpite_campeao": p.get("palpite_campeao"),
+            "pts_grupos": pts_g,
+            "pts_mata": pts_m,
+            "pts_camp": pts_camp,
+            "total": pts_g + pts_m + pts_camp,
+        })
+    return sorted(ranking, key=lambda x: (-x["total"], x["nome"]))
 
 
 # ─────────────────────────────────────────────
 # SIDEBAR
 # ─────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("## ⚽ Bolão Copa 2026")
+    st.markdown(f"## ⚽ {BOLAO_NOME}")
     st.markdown("---")
     pagina = st.radio(
         "Menu",
@@ -367,14 +552,20 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
     st.markdown("---")
+    st.markdown("**🔗 Compartilhe este bolão:**")
+    st.code(SHARE_URL, language=None)
+    st.markdown("---")
     st.caption("Copa do Mundo 2026\nEUA · Canadá · México")
+    if st.button("🏠 Todos os Bolões", use_container_width=True):
+        st.query_params.clear()
+        st.rerun()
 
 
 # ═══════════════════════════════════════════════════════════
 #  🏆 RANKING
 # ═══════════════════════════════════════════════════════════
 if pagina == "🏆 Ranking":
-    st.markdown('<p class="page-title">🏆 Ranking</p>', unsafe_allow_html=True)
+    st.markdown(f'<p class="page-title">🏆 Ranking — {BOLAO_NOME}</p>', unsafe_allow_html=True)
     st.markdown('<p class="subtitle">Pontuação atualizada automaticamente</p>', unsafe_allow_html=True)
 
     if st.button("🔄 Atualizar", key="refresh_rank"):
@@ -401,7 +592,6 @@ if pagina == "🏆 Ranking":
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # Pontuação tabela
         with st.expander("Ver tabela completa"):
             df = pd.DataFrame(ranking)[["nome", "pts_grupos", "pts_mata", "pts_camp", "total"]].copy()
             df.index = range(1, len(df) + 1)
@@ -415,7 +605,7 @@ if pagina == "🏆 Ranking":
 elif pagina == "📝 Meus Palpites":
     st.markdown('<p class="page-title">📝 Meus Palpites</p>', unsafe_allow_html=True)
 
-    partes = get_participantes()
+    partes = get_participantes(BOLAO_ID)
     if not partes:
         st.warning("Nenhum participante cadastrado. Acesse 👥 Participantes primeiro.")
         st.stop()
@@ -456,7 +646,7 @@ elif pagina == "📝 Meus Palpites":
         st.session_state.logged_part_id = None
         st.rerun()
 
-    resultados = get_resultados()
+    resultados = get_resultados(BOLAO_ID)
     palpites   = get_palpites_part(part_id)
 
     tab_c, tab_g, tab_m = st.tabs([
@@ -490,7 +680,7 @@ elif pagina == "📝 Meus Palpites":
                 if sel == "— selecionar —":
                     st.error("Selecione um time.")
                 else:
-                    time_escolhido = sel.split(" ", 1)[1]  # remove flag emoji
+                    time_escolhido = sel.split(" ", 1)[1]
                     db.table("participantes").update({
                         "palpite_campeao": time_escolhido
                     }).eq("id", part_id).execute()
@@ -521,7 +711,6 @@ elif pagina == "📝 Meus Palpites":
                 dh = (res or {}).get("data_hora")
                 tem_resultado = res is not None and res.get("gols_mandante") is not None
                 travado_hora = esta_travado(dh)
-                bloqueado = tem_resultado or travado_hora
 
                 st.markdown(f"**{game['detalhe']}** &nbsp;·&nbsp; <span style='color:#888;font-size:0.85rem'>{fmt_dh(dh) if dh else 'Horário a definir'}</span>", unsafe_allow_html=True)
                 col_m, col_x, col_v = st.columns([5, 1, 5])
@@ -689,7 +878,7 @@ elif pagina == "📝 Meus Palpites":
 elif pagina == "⚽ Jogos":
     st.markdown('<p class="page-title">⚽ Jogos e Resultados</p>', unsafe_allow_html=True)
 
-    resultados = get_resultados()
+    resultados = get_resultados(BOLAO_ID)
 
     fase_opts = ["Todos", "Grupos"] + KO_FASE_NAMES
     filtro = st.selectbox("Filtrar por fase:", fase_opts)
@@ -743,7 +932,7 @@ elif pagina == "⚽ Jogos":
 elif pagina == "👥 Participantes":
     st.markdown('<p class="page-title">👥 Participantes</p>', unsafe_allow_html=True)
 
-    partes = get_participantes()
+    partes = get_participantes(BOLAO_ID)
 
     if partes:
         df = pd.DataFrame(partes)[["nome", "apelido"]].rename(
@@ -775,9 +964,10 @@ elif pagina == "👥 Participantes":
             elif pin != pin2:
                 st.error("PINs não conferem.")
             elif any(p["nome"].lower() == nome.strip().lower() for p in partes):
-                st.error("Já existe um participante com esse nome.")
+                st.error("Já existe um participante com esse nome neste bolão.")
             else:
                 db.table("participantes").insert({
+                    "bolao_id": BOLAO_ID,
                     "nome": nome.strip(),
                     "apelido": apelido.strip() or None,
                     "pin": pin,
@@ -812,7 +1002,6 @@ elif pagina == "📖 Como Pontua":
     st.markdown('<p class="page-title">📖 Como Funciona a Pontuação</p>', unsafe_allow_html=True)
     st.markdown('<p class="subtitle">Entenda como os pontos são calculados</p>', unsafe_allow_html=True)
 
-    # Cards de pontuação
     st.markdown("""
     <div class="pts-card exato">
         <div class="pts-icon">🎯</div>
@@ -853,7 +1042,6 @@ elif pagina == "📖 Como Pontua":
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Tabela resumo
     st.subheader("📊 Tabela de Pontos")
     col1, col2, col3 = st.columns(3)
     col1.metric("Placar exato", "3 pontos", "máximo por jogo")
@@ -862,7 +1050,6 @@ elif pagina == "📖 Como Pontua":
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Exemplos práticos
     st.subheader("📝 Exemplos Práticos")
     exemplos = [
         ("Brasil 2 × 1 Argentina", "Brasil 2 × 1 Argentina", "🎯 Placar exato", 3, "#d5f5e3"),
@@ -885,7 +1072,6 @@ elif pagina == "📖 Como Pontua":
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Grupos da copa
     st.subheader("🌍 Grupos da Copa 2026")
     cols = st.columns(4)
     for idx, (letra, times) in enumerate(GROUPS.items()):
@@ -903,13 +1089,13 @@ elif pagina == "📖 Como Pontua":
 #  🔒 ADMIN
 # ═══════════════════════════════════════════════════════════
 elif pagina == "🔒 Admin":
-    st.markdown('<p class="page-title">🔒 Painel Admin</p>', unsafe_allow_html=True)
+    st.markdown(f'<p class="page-title">🔒 Admin — {BOLAO_NOME}</p>', unsafe_allow_html=True)
 
     if not st.session_state.get("admin_ok"):
         with st.form("login_admin"):
             senha = st.text_input("Senha:", type="password")
             if st.form_submit_button("Entrar", type="primary"):
-                if senha == st.secrets.get("ADMIN_PASSWORD", "copa2026admin"):
+                if senha == BOLAO_ADMIN_PWD:
                     st.session_state["admin_ok"] = True
                     st.rerun()
                 else:
@@ -921,16 +1107,16 @@ elif pagina == "🔒 Admin":
         st.session_state["admin_ok"] = False
         st.rerun()
 
-    tab_res, tab_horarios, tab_times, tab_camp, tab_pins, tab_init = st.tabs(
+    tab_res, tab_horarios, tab_times, tab_camp, tab_pins, tab_bolao, tab_init = st.tabs(
         ["⚽ Lançar Resultados", "🕐 Horários", "🔄 Times (Mata-Mata)",
-         "🏆 Campeão Oficial", "🔑 Gerenciar PINs", "🗄️ Inicializar BD"]
+         "🏆 Campeão Oficial", "🔑 Gerenciar PINs", "⚙️ Configurar Bolão", "🗄️ Inicializar BD"]
     )
 
     # ── RESULTADOS ───────────────────────────────────────
     with tab_res:
         st.subheader("Lançar Resultados Reais")
 
-        resultados = get_resultados()
+        resultados = get_resultados(BOLAO_ID)
 
         fase_admin = st.selectbox(
             "Fase:", ["Grupos"] + KO_FASE_NAMES, key="admin_fase"
@@ -967,6 +1153,7 @@ elif pagina == "🔒 Admin":
                 )
                 if st.button("💾 Salvar", key=f"save_{game['id']}", type="primary"):
                     payload = {
+                        "bolao_id": BOLAO_ID,
                         "jogo_id": game["id"],
                         "gols_mandante": gm,
                         "gols_visitante": gv,
@@ -974,7 +1161,9 @@ elif pagina == "🔒 Admin":
                         "visitante": visitante,
                     }
                     if res:
-                        db.table("resultados").update(payload).eq("jogo_id", game["id"]).execute()
+                        db.table("resultados").update({
+                            "gols_mandante": gm, "gols_visitante": gv,
+                        }).eq("jogo_id", game["id"]).eq("bolao_id", BOLAO_ID).execute()
                     else:
                         db.table("resultados").insert(payload).execute()
                     clear_cache()
@@ -985,12 +1174,11 @@ elif pagina == "🔒 Admin":
     with tab_horarios:
         st.subheader("🕐 Definir Data e Hora dos Jogos")
         st.info(
-            "Defina o horário de cada jogo. As apostas dos participantes "
-            "**travam automaticamente** quando o horário do jogo chega. "
+            "Defina o horário de cada jogo. As apostas travam automaticamente quando o horário chega. "
             "Horário em **Brasília (UTC-3)**."
         )
 
-        resultados = get_resultados()
+        resultados = get_resultados(BOLAO_ID)
 
         fase_h = st.selectbox(
             "Fase:", ["Grupos"] + KO_FASE_NAMES, key="hor_fase"
@@ -1004,7 +1192,6 @@ elif pagina == "🔒 Admin":
         else:
             games_h = [g for g in ALL_GAMES if g["fase"] == fase_h]
 
-        # Set all at once option
         with st.expander("⚡ Definir TODOS os horários desta fase de uma vez"):
             colA, colB, colC = st.columns(3)
             data_base = colA.date_input("Data inicial:", key="bulk_data")
@@ -1018,14 +1205,13 @@ elif pagina == "🔒 Admin":
                     res = resultados.get(game["id"])
                     mandante  = (res or {}).get("mandante") or game["mandante"]
                     visitante = (res or {}).get("visitante") or game["visitante"]
-                    payload = {
-                        "jogo_id": game["id"], "data_hora": iso,
-                        "mandante": mandante, "visitante": visitante,
-                    }
                     if res:
-                        db.table("resultados").update({"data_hora": iso}).eq("jogo_id", game["id"]).execute()
+                        db.table("resultados").update({"data_hora": iso}).eq("jogo_id", game["id"]).eq("bolao_id", BOLAO_ID).execute()
                     else:
-                        db.table("resultados").insert(payload).execute()
+                        db.table("resultados").insert({
+                            "bolao_id": BOLAO_ID, "jogo_id": game["id"],
+                            "data_hora": iso, "mandante": mandante, "visitante": visitante,
+                        }).execute()
                     cur += _td(hours=intervalo_h)
                 clear_cache()
                 st.success(f"✅ Horários definidos para {len(games_h)} jogos!")
@@ -1054,11 +1240,11 @@ elif pagina == "🔒 Admin":
                         from datetime import datetime as _dt
                         iso = _dt.combine(data_in, hora_in).replace(tzinfo=BR_TZ).isoformat()
                         if res:
-                            db.table("resultados").update({"data_hora": iso}).eq("jogo_id", game["id"]).execute()
+                            db.table("resultados").update({"data_hora": iso}).eq("jogo_id", game["id"]).eq("bolao_id", BOLAO_ID).execute()
                         else:
                             db.table("resultados").insert({
-                                "jogo_id": game["id"], "data_hora": iso,
-                                "mandante": mandante, "visitante": visitante,
+                                "bolao_id": BOLAO_ID, "jogo_id": game["id"],
+                                "data_hora": iso, "mandante": mandante, "visitante": visitante,
                             }).execute()
                         clear_cache()
                         st.success(f"✅ Horário {fmt_dh(iso)} salvo!")
@@ -1071,7 +1257,7 @@ elif pagina == "🔒 Admin":
         st.subheader("Atualizar Nomes dos Times (Mata-Mata)")
         st.info("Atualize os times conforme avançam para o mata-mata.")
 
-        resultados = get_resultados()
+        resultados = get_resultados(BOLAO_ID)
         fase_times = st.selectbox("Fase:", KO_FASE_NAMES, key="ko_times_fase")
         games_ko_t = [g for g in ALL_GAMES if g["fase"] == fase_times]
 
@@ -1082,11 +1268,13 @@ elif pagina == "🔒 Admin":
                 m = col1.text_input("Mandante", value=res.get("mandante", game["mandante"]), key=f"tm_{game['id']}")
                 v = col2.text_input("Visitante", value=res.get("visitante", game["visitante"]), key=f"tv_{game['id']}")
                 if st.button("Atualizar", key=f"upd_{game['id']}"):
-                    payload = {"jogo_id": game["id"], "mandante": m, "visitante": v}
                     if res:
-                        db.table("resultados").update({"mandante": m, "visitante": v}).eq("jogo_id", game["id"]).execute()
+                        db.table("resultados").update({"mandante": m, "visitante": v}).eq("jogo_id", game["id"]).eq("bolao_id", BOLAO_ID).execute()
                     else:
-                        db.table("resultados").insert(payload).execute()
+                        db.table("resultados").insert({
+                            "bolao_id": BOLAO_ID, "jogo_id": game["id"],
+                            "mandante": m, "visitante": v,
+                        }).execute()
                     clear_cache()
                     st.success("✅ Times atualizados!")
                     st.rerun()
@@ -1123,7 +1311,7 @@ elif pagina == "🔒 Admin":
 
         st.markdown("---")
         st.subheader("📊 Quem palpitou em quê")
-        partes_aq = get_participantes()
+        partes_aq = get_participantes(BOLAO_ID)
         if partes_aq:
             palpites_camp = [
                 {"Nome": p["nome"], "Palpite": (flag(p["palpite_campeao"]) + " " + p["palpite_campeao"]) if p.get("palpite_campeao") else "— sem palpite —"}
@@ -1138,7 +1326,7 @@ elif pagina == "🔒 Admin":
         st.subheader("🔑 Gerenciar PINs dos Participantes")
         st.info("Use para resetar PIN de participantes que esqueceram.")
 
-        partes_pins = get_participantes()
+        partes_pins = get_participantes(BOLAO_ID)
         for p in partes_pins:
             has_pin = "✅" if p.get("pin") else "❌"
             with st.expander(f"{has_pin} {p['nome']}"):
@@ -1154,6 +1342,41 @@ elif pagina == "🔒 Admin":
                     else:
                         st.error("PIN deve ter 4-6 dígitos numéricos.")
 
+    # ── CONFIGURAR BOLÃO ─────────────────────────────────
+    with tab_bolao:
+        st.subheader("⚙️ Configurações do Bolão")
+        st.info("Altere o nome ou a senha de administrador deste bolão.")
+
+        with st.form("form_config_bolao"):
+            novo_nome = st.text_input("Nome do bolão", value=BOLAO_NOME)
+            st.markdown("**Alterar senha do admin** (deixe em branco para manter a atual):")
+            nova_senha = st.text_input("Nova senha", type="password")
+            nova_senha2 = st.text_input("Confirmar nova senha", type="password")
+            if st.form_submit_button("💾 Salvar Configurações", type="primary"):
+                updates = {}
+                if novo_nome.strip() and novo_nome.strip() != BOLAO_NOME:
+                    updates["nome"] = novo_nome.strip()
+                if nova_senha:
+                    if nova_senha != nova_senha2:
+                        st.error("Senhas não conferem.")
+                        st.stop()
+                    elif len(nova_senha) < 4:
+                        st.error("Senha deve ter ao menos 4 caracteres.")
+                        st.stop()
+                    else:
+                        updates["admin_password"] = nova_senha
+                if updates:
+                    db.table("boloes").update(updates).eq("id", BOLAO_ID).execute()
+                    get_bolao_by_slug.clear()
+                    st.success("✅ Configurações salvas! Recarregue a página.")
+                else:
+                    st.info("Nenhuma alteração detectada.")
+
+        st.markdown("---")
+        st.subheader("🔗 Link de compartilhamento")
+        st.markdown(f'<div class="share-box">{SHARE_URL}</div>', unsafe_allow_html=True)
+        st.caption("Compartilhe este link com todos os participantes do seu bolão.")
+
     # ── INICIALIZAR BD ───────────────────────────────────
     with tab_init:
         st.subheader("Inicializar Banco de Dados")
@@ -1161,14 +1384,10 @@ elif pagina == "🔒 Admin":
             "⚠️ Execute este passo **apenas uma vez** após criar as tabelas no Supabase. "
             "Não apaga dados existentes."
         )
-        st.markdown("""
-        **Antes de clicar, execute este SQL no Supabase (SQL Editor):**
-        ```sql
-        -- Colar o conteúdo do arquivo setup_db.sql
-        ```
-        """)
+        st.markdown("**Execute o arquivo `setup_db.sql` no Supabase SQL Editor.**")
         if st.button("🗄️ Verificar conexão com BD", type="primary"):
             try:
+                db.table("boloes").select("id").limit(1).execute()
                 db.table("participantes").select("id").limit(1).execute()
                 db.table("resultados").select("id").limit(1).execute()
                 db.table("palpites").select("id").limit(1).execute()
