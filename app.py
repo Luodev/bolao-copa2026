@@ -340,8 +340,8 @@ if not slug_url:
                 slug_final = slugify(slug_custom) if slug_custom else slug_sugerido
                 if not nome_bolao.strip():
                     st.error("Nome do bolão é obrigatório.")
-                elif not slug_final:
-                    st.error("Slug inválido.")
+                elif not slug_final or len(slug_final) < 3:
+                    st.error("Slug inválido — mínimo 3 caracteres (letras e números).")
                 elif not admin_pass or len(admin_pass) < 4:
                     st.error("Senha deve ter ao menos 4 caracteres.")
                 elif admin_pass != admin_pass2:
@@ -462,9 +462,9 @@ def get_palpites_part(participante_id: int):
 
 
 @st.cache_data(ttl=30)
-def get_config(chave: str):
-    """Chave namespaceada: '{BOLAO_ID}:{chave}'"""
-    key = f"{BOLAO_ID}:{chave}"
+def get_config(bolao_id: int, chave: str):
+    """Chave namespaceada: '{bolao_id}:{chave}' — bolao_id é parâmetro para isolamento de cache."""
+    key = f"{bolao_id}:{chave}"
     res = db.table("configuracao").select("*").eq("chave", key).execute()
     if res.data:
         return res.data[0]["valor"]
@@ -499,7 +499,7 @@ def calcular_pontos(pm, pv, rm, rv):
 def calcular_ranking():
     resultados = get_resultados(BOLAO_ID)
     partes = get_participantes(BOLAO_ID)
-    campeao_oficial = get_config("campeao_oficial")
+    campeao_oficial = get_config(BOLAO_ID, "campeao_oficial")
     ranking = []
     for p in partes:
         palpites = get_palpites_part(p["id"])
@@ -611,10 +611,12 @@ elif pagina == "📝 Meus Palpites":
         st.stop()
 
     # ── LOGIN COM PIN ──────────────────────────────
-    if "logged_part_id" not in st.session_state:
-        st.session_state.logged_part_id = None
+    # Chave de sessão isolada por bolão para evitar vazamento entre bolões
+    login_key = f"logged_part_id_{BOLAO_ID}"
+    if login_key not in st.session_state:
+        st.session_state[login_key] = None
 
-    if st.session_state.logged_part_id is None:
+    if st.session_state[login_key] is None:
         st.markdown('<p class="subtitle">🔐 Entre com seu nome e PIN para palpitar</p>', unsafe_allow_html=True)
         with st.form("login_palpites"):
             nome_in = st.selectbox("Seu nome:", [p["nome"] for p in partes])
@@ -629,21 +631,21 @@ elif pagina == "📝 Meus Palpites":
                 elif str(pm["pin"]) != str(pin_in):
                     st.error("PIN incorreto.")
                 else:
-                    st.session_state.logged_part_id = pm["id"]
+                    st.session_state[login_key] = pm["id"]
                     st.rerun()
         st.info("👉 Ainda não tem conta? Vá em **👥 Participantes** e cadastre-se com um PIN.")
         st.stop()
 
-    part = next((p for p in partes if p["id"] == st.session_state.logged_part_id), None)
+    part = next((p for p in partes if p["id"] == st.session_state[login_key]), None)
     if part is None:
-        st.session_state.logged_part_id = None
+        st.session_state[login_key] = None
         st.rerun()
     part_id = part["id"]
 
     col_h1, col_h2 = st.columns([4, 1])
     col_h1.success(f"👋 Bem-vindo(a), **{part['nome']}**!")
     if col_h2.button("🚪 Sair", use_container_width=True):
-        st.session_state.logged_part_id = None
+        st.session_state[login_key] = None
         st.rerun()
 
     resultados = get_resultados(BOLAO_ID)
@@ -1091,12 +1093,14 @@ elif pagina == "📖 Como Pontua":
 elif pagina == "🔒 Admin":
     st.markdown(f'<p class="page-title">🔒 Admin — {BOLAO_NOME}</p>', unsafe_allow_html=True)
 
-    if not st.session_state.get("admin_ok"):
+    # Chave de sessão admin isolada por bolão para evitar vazamento entre bolões
+    admin_key = f"admin_ok_{BOLAO_ID}"
+    if not st.session_state.get(admin_key):
         with st.form("login_admin"):
             senha = st.text_input("Senha:", type="password")
             if st.form_submit_button("Entrar", type="primary"):
                 if senha == BOLAO_ADMIN_PWD:
-                    st.session_state["admin_ok"] = True
+                    st.session_state[admin_key] = True
                     st.rerun()
                 else:
                     st.error("Senha incorreta.")
@@ -1104,7 +1108,7 @@ elif pagina == "🔒 Admin":
 
     st.success("✅ Modo administrador ativo")
     if st.button("🚪 Sair do admin"):
-        st.session_state["admin_ok"] = False
+        st.session_state[admin_key] = False
         st.rerun()
 
     tab_res, tab_horarios, tab_times, tab_camp, tab_pins, tab_bolao, tab_init = st.tabs(
@@ -1287,7 +1291,7 @@ elif pagina == "🔒 Admin":
             f"As apostas dos participantes para o campeão fecham automaticamente em **{COPA_START.strftime('%d/%m/%Y às %H:%M')}**."
         )
 
-        camp_atual = get_config("campeao_oficial")
+        camp_atual = get_config(BOLAO_ID, "campeao_oficial")
         if camp_atual:
             st.success(f"Campeão atual: **{flag(camp_atual)} {camp_atual}**")
         else:
@@ -1354,18 +1358,19 @@ elif pagina == "🔒 Admin":
             nova_senha2 = st.text_input("Confirmar nova senha", type="password")
             if st.form_submit_button("💾 Salvar Configurações", type="primary"):
                 updates = {}
+                erro_cfg = None
                 if novo_nome.strip() and novo_nome.strip() != BOLAO_NOME:
                     updates["nome"] = novo_nome.strip()
                 if nova_senha:
                     if nova_senha != nova_senha2:
-                        st.error("Senhas não conferem.")
-                        st.stop()
+                        erro_cfg = "Senhas não conferem."
                     elif len(nova_senha) < 4:
-                        st.error("Senha deve ter ao menos 4 caracteres.")
-                        st.stop()
+                        erro_cfg = "Senha deve ter ao menos 4 caracteres."
                     else:
                         updates["admin_password"] = nova_senha
-                if updates:
+                if erro_cfg:
+                    st.error(erro_cfg)
+                elif updates:
                     db.table("boloes").update(updates).eq("id", BOLAO_ID).execute()
                     get_bolao_by_slug.clear()
                     st.success("✅ Configurações salvas! Recarregue a página.")
